@@ -1,0 +1,404 @@
+---
+title: "Combine x Snap Count"
+author: "Alaina, Collin, Max, Stef"
+date: "`r Sys.Date()`"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+Packages
+```{r}
+library(httr) 
+library(rvest) 
+library(jsonlite) 
+library(tidyverse)
+library(dplyr)
+library(ggplot2)
+library(dplyr)
+library(rvest)
+
+```
+
+Load in snap counts via scrape
+Not needed with second chunk can delete this whenever
+```{r}
+urlD23 <- "https://www.fantasypros.com/nfl/reports/snap-counts/defense.php?year=2023"
+fpD23 <- read_html(urlD23)
+table_fpD23 <- fpD23 %>% 
+  html_node("table") %>% 
+  html_table()
+table_fpD23 <- table_fpD23 %>%
+  mutate(across(everything(), ~ ifelse(. == "bye", "0", .))) %>% 
+  mutate(across(-c(1:3), as.integer))
+
+urlO23 <- "https://www.fantasypros.com/nfl/reports/snap-counts/?year=2023"
+fpO23 <- read_html(urlO23)
+table_fpO23 <- fpO23 %>% 
+  html_node("table") %>% 
+  html_table()
+table_fpO23 <- table_fpO23 %>%
+  mutate(across(everything(), ~ ifelse(. == "bye", "0", .))) %>% 
+  mutate(across(-c(1:3), as.integer))
+
+table_fpD23
+  table_fpD23$Player_Team <- paste(table_fpD23$Player, table_fpD23$Team)
+  
+  table_fpD23 <- table_fpD23 %>%
+    select(-Player, Team)
+    
+table_fpO23
+  table_fpO23$Player_Team <- paste(table_fpO23$Player, table_fpO23$Team)
+  
+  table_fpO23 <- table_fpO23 %>%
+    select(-Player, Team)
+
+```
+
+All Years available on Fantasy Pros
+```{r}
+
+#DEFENSE
+# Function to scrape and process the table for a given year
+process_table_D <- function(year) {
+  url_D <- paste0("https://www.fantasypros.com/nfl/reports/snap-counts/defense.php?year=", year)
+  table_D <- read_html(url_D) %>%
+    html_node("table") %>%
+    html_table()
+  
+  # Replace "bye" with "0" and convert columns to integers
+  table_D <- table_D %>%
+    mutate(across(everything(), ~ ifelse(. == "bye", "0", .))) %>%
+    mutate(across(-c(1:3), as.integer))
+  
+  return(table_D)
+}
+
+# List to store tables
+tables_list_D <- list()
+
+# Loop through the years and process the tables
+for (year in 2016:2023) {
+  tables_list_D[[as.character(year)]] <- process_table_D(year)
+}
+
+# Combine all tables into one
+fpD_snap_table <- bind_rows(tables_list_D, .id = "Year")
+
+#OFFENSE
+# Function to scrape and process the table for a given year
+process_table_O <- function(year) {
+  url_O <- paste0("https://www.fantasypros.com/nfl/reports/snap-counts/?year=", year)
+  table_O <- read_html(url_O) %>%
+    html_node("table") %>%
+    html_table()
+  
+  # Replace "bye" with "0" and convert columns to integers
+  table_O <- table_O %>%
+    mutate(across(everything(), ~ ifelse(. == "bye", "0", .))) %>%
+    mutate(across(-c(1:3), as.integer))
+  
+  return(table_O)
+}
+
+# List to store tables
+tables_list_O <- list()
+
+# Loop through the years and process the tables
+for (year in 2016:2023) {
+  tables_list_O[[as.character(year)]] <- process_table_O(year)
+}
+
+# Combine all tables into one
+fpO_snap_table <- bind_rows(tables_list_O, .id = "Year")
+
+
+# Combine O and D
+fp_snap_table <- bind_rows(fpD_snap_table, fpO_snap_table)
+```
+
+pivot that ho
+```{r}
+library(tidyr)
+library(dplyr)
+
+# Ensure all columns are character type before pivoting
+fpD_snap_table <- fpD_snap_table %>%
+  mutate(across(everything(), as.character))
+
+fpO_snap_table <- fpO_snap_table %>%
+  mutate(across(everything(), as.character))
+
+# Identify and resolve duplicates in the defense table
+fpD_snap_table <- fpD_snap_table %>%
+  group_by(Player, Pos, Year) %>%
+  summarise(across(everything(), ~ paste(unique(.), collapse = ",")), .groups = 'drop')
+
+# Identify and resolve duplicates in the offense table
+fpO_snap_table <- fpO_snap_table %>%
+  group_by(Player, Pos, Year) %>%
+  summarise(across(everything(), ~ paste(unique(.), collapse = ",")), .groups = 'drop')
+
+# Pivot the defense table to a wider format
+fpD_snap_table_wide <- fpD_snap_table %>%
+  pivot_wider(names_from = Year, values_from = -c(Year, Player, Pos), names_prefix = "Year_")
+
+# Pivot the offense table to a wider format
+fpO_snap_table_wide <- fpO_snap_table %>%
+  pivot_wider(names_from = Year, values_from = -c(Year, Player, Pos), names_prefix = "Year_")
+
+# Combine the wide tables for defense and offense
+fp_snap_table_wide <- bind_rows(fpD_snap_table_wide, fpO_snap_table_wide)
+
+```
+
+Adjustments
+```{r}
+# Convert the TTL_Year_ columns to numeric
+fp_snap_table_wide <- fp_snap_table_wide %>%
+  mutate(across(starts_with("TTL_Year_"),  ~ 
+                  as.numeric(replace(., !is.na(.) & !grepl("^[0-9]+$", .), 0))))
+
+# Create a new column that sums the values in TTL_Year_2016 and the following years
+fp_snap_table_wide <- fp_snap_table_wide %>%
+  mutate(Total_Career_Snaps = rowSums(select(., starts_with("TTL_Year_")), na.rm = TRUE))
+
+# Rearrange the columns to place the new column as the third column
+fp_snap_table_wide <- fp_snap_table_wide %>%
+  select(1:2, Total_Career_Snaps, everything())
+
+
+```
+
+
+load in combine data. Gonna have to write different code per computer
+```{r}
+#Alaina
+# combine22 <- read.csv("/Users/alainabrady/Desktop/Predictive Analytics/2022_combine.csv")
+# combine21 <- read.csv("/Users/alainabrady/Desktop/Predictive Analytics/2021_combine.csv")
+# combine20 <- read.csv("/Users/alainabrady/Desktop/Predictive Analytics/2020_combine.csv")
+# combine19 <- read.csv("/Users/alainabrady/Desktop/Predictive Analytics//2019_combine.csv")
+# combine18 <- read.csv("/Users/alainabrady/Desktop/Predictive Analytics/2018_combine.csv")
+# combine17 <- read.csv("/Users/alainabrady/Desktop/Predictive Analytics/2017_combine.csv")
+# combine16 <- read.csv("/Users/alainabrady/Desktop/Predictive Analytics/2016_combine.csv")
+
+# #Collin
+ combine22 <- read.csv("C:/Users/cstra/Downloads/NFL_Combine_Data/2022_combine.csv")
+ combine21 <- read.csv("C:/Users/cstra/Downloads/NFL_Combine_Data/2021_combine.csv")
+ combine20 <- read.csv("C:/Users/cstra/Downloads/NFL_Combine_Data/2020_combine.csv")
+ combine19 <- read.csv("C:/Users/cstra/Downloads/NFL_Combine_Data/2019_combine.csv")
+ combine18 <- read.csv("C:/Users/cstra/Downloads/NFL_Combine_Data/2018_combine.csv")
+ combine17 <- read.csv("C:/Users/cstra/Downloads/NFL_Combine_Data/2017_combine.csv")
+ combine16 <- read.csv("C:/Users/cstra/Downloads/NFL_Combine_Data/2016_combine.csv") 
+  
+#Max
+#combine22 <- read.csv()#filepath
+#combine21 <- read.csv()#filepath
+#combine20 <- read.csv()#filepath
+#combine19 <- read.csv()#filepath
+#combine18 <- read.csv()#filepath
+#combine17 <- read.csv()#filepath
+#combine16 <- read.csv()#filepath
+  
+#Stef
+#combine22 <- read.csv("C:/Users/stefa/OneDrive/Documents/Predictive Analytics/2022_combine.csv")#file path
+#combine21 <- read.csv("C:/Users/stefa/OneDrive/Documents/Predictive Analytics/2021_combine.csv")#filepath
+#combine20 <- read.csv("C:/Users/stefa/OneDrive/Documents/Predictive Analytics/2020_combine.csv")#filepath
+#combine19 <- read.csv("C:/Users/stefa/OneDrive/Documents/Predictive Analytics/2019_combine.csv")#filepath
+#combine18 <- read.csv("C:/Users/stefa/OneDrive/Documents/Predictive Analytics/2018_combine.csv")#filepath
+#combine17 <- read.csv("C:/Users/stefa/OneDrive/Documents/Predictive Analytics/2017_combine.csv")#filepath
+#combine16 <- read.csv("C:/Users/stefa/OneDrive/Documents/Predictive Analytics/2016_combine.csv")#filepath
+
+all_combine_data <- bind_rows(combine22, combine21, combine20, combine19, combine18, combine17, combine16)
+
+all_combine_data$Player <- gsub("\\.", "", all_combine_data$Player)
+
+fp_snap_table_wide$Player <- gsub("\\.", "", fp_snap_table_wide$Player)
+
+all_combine_data$Player <- toupper(all_combine_data$Player) 
+
+fp_snap_table_wide$Player <- toupper(fp_snap_table_wide$Player)
+
+all_combine_data$Player <- gsub("III", "", all_combine_data$Player)
+
+fp_snap_table_wide$Player <- gsub("III", "", fp_snap_table_wide$Player)
+
+
+all_combine_data$Player <- gsub("IV", "", all_combine_data$Player)
+
+fp_snap_table_wide$Player <- gsub("IV", "", fp_snap_table_wide$Player)
+
+
+all_combine_data$Player <- gsub("II", "", all_combine_data$Player)
+
+fp_snap_table_wide$Player <- gsub("II", "", fp_snap_table_wide$Player)
+
+all_combine_data$Player <- gsub("SR", "", all_combine_data$Player)
+
+fp_snap_table_wide$Player <- gsub("SR", "", fp_snap_table_wide$Player)
+
+all_combine_data$Player <- gsub("JR", "", all_combine_data$Player)
+
+fp_snap_table_wide$Player <- gsub("JR", "", fp_snap_table_wide$Player)
+
+all_combine_data$Player <- trimws(all_combine_data$Player)
+
+fp_snap_table_wide$Player <- trimws(fp_snap_table_wide$Player)
+
+```
+
+Inner join combine and snap in to one via player
+```{r}
+dataset <- all_combine_data %>%
+  left_join(fp_snap_table_wide, by = "Player")
+
+#problem on lines 1232/1233 - sure happens elsewhere - duplicate players
+#will create new columns in each data set that are "Player & University"
+#innerjoin on P&U rather than Player
+
+dataset_unique <- dataset %>%
+  filter(!Player %in% Player[duplicated(Player)])
+
+
+dataset_unique$Total_Career_Snaps[is.na(dataset_unique$Total_Career_Snaps)] <- 0
+
+```
+problem on lines 1232/1233 - sure happens elsewhere - duplicate players
+first thought was to create a new column of player x position and inner join on that
+problem is the combine positions are more detailed and include positions not in the snap table
+could dumb down positions in combine data and do that
+could also just remove all duplicates
+
+Other cleaning to do:
+remove offensive linemen/special teams
+could probably get rid of a bunch - dont really need all the weekly 
+Others...?
+Feel free to throw them down here and we can check them off
+
+
+Actual whatever the fuck we are doing
+```{r}
+summary(dataset)
+
+## removing offensive linemen/special teams/positions that dont match between columns
+dataset_unique <- dataset_unique[!dataset_unique$Pos.x %in% c("LT", "LG", "C", "RG", "RT","OT", "OG", "K", "LS", "P"), ]
+```
+
+
+
+
+
+
+
+
+
+
+
+
+Visualizations
+```{r}
+ggplot(dataset_unique, aes(x = Ht, y = Wt, color = Pos.x)) +
+  geom_point() +
+  labs(title = "Height vs Weight by Position", x = "Height (inches)", y = "Weight (lbs)")
+
+ggplot(dataset_unique, aes(x = X40yd)) +
+  geom_histogram(binwidth = 0.05, fill = "blue", color = "black") +
+  labs(title = "Distribution of 40-yard Dash Times", x = "40-yard Dash Time (seconds)", y = "Count")
+
+ggplot(dataset_unique, aes(x = Pos.x, y = Vertical, fill = Pos.x)) +
+  geom_boxplot() +
+  labs(title = "Vertical Jump by Position", x = "Position", y = "Vertical Jump (inches)")
+
+ggplot(dataset_unique, aes(x = Pos.x, y = Bench, fill = Pos.x)) +
+  geom_boxplot() +
+  labs(title = "Bench Press Reps by Position", x = "Position", y = "Bench Press Reps")
+
+ggplot(dataset_unique, aes(x = Pos.x, y = Broad.Jump, fill = Pos.x)) +
+  geom_boxplot() +
+  labs(title = "Broad Jump by Position", x = "Position", y = "Broad Jump (inches)")
+
+ggplot(dataset_unique, aes(x = X3Cone)) +
+  geom_histogram(binwidth = 0.1, fill = "green", color = "black") +
+  labs(title = "Distribution of 3-Cone Drill Times", x = "3-Cone Drill Time (seconds)", y = "Count")
+
+ggplot(dataset_unique, aes(x = Shuttle)) +
+  geom_histogram(binwidth = 0.05, fill = "purple", color = "black") +
+  labs(title = "Distribution of Shuttle Run Times", x = "Shuttle Run Time (seconds)", y = "Count")
+
+ggplot(dataset_unique, aes(x = Pos.x, y = Total_Career_Snaps, fill = Pos.x)) +
+  geom_boxplot() +
+  labs(title = "Total Career Snaps by Position", x = "Position", y = "Total Career Snaps")
+
+ggplot(dataset_unique, aes(x = Ht, y = X40yd, color = Pos.x)) +
+  geom_point() +
+  labs(title = "Height vs 40-yard Dash Time", x = "Height (inches)", y = "40-yard Dash Time (seconds)")
+
+ggplot(dataset_unique, aes(x = Wt, y = Bench, color = Pos.x)) +
+  geom_point() +
+  labs(title = "Weight vs Bench Press Reps", x = "Weight (lbs)", y = "Bench Press Reps")
+
+```
+
+More
+```{r}
+ggplot(dataset_unique, aes(x = X40yd, y = Total_Career_Snaps, color = Pos.x)) +
+  geom_point() +
+  labs(title = "Total Career Snaps vs 40-yard Dash Time", x = "40-yard Dash Time (seconds)", y = "Total Career Snaps")
+
+ggplot(dataset_unique, aes(x = Vertical, y = Total_Career_Snaps, color = Pos.x)) +
+  geom_point() +
+  labs(title = "Total Career Snaps vs Vertical Jump", x = "Vertical Jump (inches)", y = "Total Career Snaps")
+
+ggplot(dataset_unique, aes(x = Bench, y = Total_Career_Snaps, color = Pos.x)) +
+  geom_point() +
+  labs(title = "Total Career Snaps vs Bench Press Reps", x = "Bench Press Reps", y = "Total Career Snaps")
+
+ggplot(dataset_unique, aes(x = Broad.Jump, y = Total_Career_Snaps, color = Pos.x)) +
+  geom_point() +
+  labs(title = "Total Career Snaps vs Broad Jump", x = "Broad Jump (inches)", y = "Total Career Snaps")
+
+ggplot(dataset_unique, aes(x = X3Cone, y = Total_Career_Snaps, color = Pos.x)) +
+  geom_point() +
+  labs(title = "Total Career Snaps vs 3-Cone Drill Time", x = "3-Cone Drill Time (seconds)", y = "Total Career Snaps")
+
+```
+more!
+```{r}
+ggplot(dataset_unique, aes(x = Shuttle, y = Total_Career_Snaps, color = Pos.x)) +
+  geom_point() +
+  labs(title = "Total Career Snaps vs Shuttle Run Time by Position", x = "Shuttle Run Time (seconds)", y = "Total Career Snaps")
+
+ggplot(dataset_unique, aes(x = Ht, y = Total_Career_Snaps, color = Pos.x)) +
+  geom_point() +
+  labs(title = "Total Career Snaps vs Height by Position", x = "Height (inches)", y = "Total Career Snaps")
+
+ggplot(dataset_unique, aes(x = Wt, y = Total_Career_Snaps, color = Pos.x)) +
+  geom_point() +
+  labs(title = "Total Career Snaps vs Weight by Position", x = "Weight (lbs)", y = "Total Career Snaps")
+
+ggplot(dataset_unique, aes(x = X40yd, y = Total_Career_Snaps, color = Pos.x)) +
+  geom_point() +
+  labs(title = "Total Career Snaps vs 40-yard Dash Time by Position", x = "40-yard Dash Time (seconds)", y = "Total Career Snaps")
+
+ggplot(dataset_unique, aes(x = Vertical, y = Total_Career_Snaps, color = Pos.x)) +
+  geom_point() +
+  labs(title = "Total Career Snaps vs Vertical Jump by Position", x = "Vertical Jump (inches)", y = "Total Career Snaps")
+
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
