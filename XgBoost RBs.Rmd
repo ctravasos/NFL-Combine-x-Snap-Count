@@ -1,0 +1,907 @@
+---
+title: "xgboost RBs"
+author: "Alaina Brady"
+date: "2024-10-06"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+Packages
+```{r}
+library(httr) 
+library(rvest) 
+library(jsonlite) 
+library(tidyverse)
+library(dplyr)
+library(ggplot2)
+library(dplyr)
+library(rvest)
+
+```
+
+Load in snap counts via scrape
+Not needed with second chunk can delete this whenever
+```{r}
+urlD23 <- "https://www.fantasypros.com/nfl/reports/snap-counts/defense.php?year=2023"
+fpD23 <- read_html(urlD23)
+table_fpD23 <- fpD23 %>% 
+  html_node("table") %>% 
+  html_table()
+table_fpD23 <- table_fpD23 %>%
+  mutate(across(everything(), ~ ifelse(. == "bye", "0", .))) %>% 
+  mutate(across(-c(1:3), as.integer))
+
+urlO23 <- "https://www.fantasypros.com/nfl/reports/snap-counts/?year=2023"
+fpO23 <- read_html(urlO23)
+table_fpO23 <- fpO23 %>% 
+  html_node("table") %>% 
+  html_table()
+table_fpO23 <- table_fpO23 %>%
+  mutate(across(everything(), ~ ifelse(. == "bye", "0", .))) %>% 
+  mutate(across(-c(1:3), as.integer))
+
+table_fpD23
+  table_fpD23$Player_Team <- paste(table_fpD23$Player, table_fpD23$Team)
+  
+  table_fpD23 <- table_fpD23 %>%
+    select(-Player, Team)
+    
+table_fpO23
+  table_fpO23$Player_Team <- paste(table_fpO23$Player, table_fpO23$Team)
+  
+  table_fpO23 <- table_fpO23 %>%
+    select(-Player, Team)
+
+```
+
+All Years available on Fantasy Pros
+```{r}
+
+#DEFENSE
+# Function to scrape and process the table for a given year
+process_table_D <- function(year) {
+  url_D <- paste0("https://www.fantasypros.com/nfl/reports/snap-counts/defense.php?year=", year)
+  table_D <- read_html(url_D) %>%
+    html_node("table") %>%
+    html_table()
+  
+  # Replace "bye" with "0" and convert columns to integers
+  table_D <- table_D %>%
+    mutate(across(everything(), ~ ifelse(. == "bye", "0", .))) %>%
+    mutate(across(-c(1:3), as.integer))
+  
+  return(table_D)
+}
+
+# List to store tables
+tables_list_D <- list()
+
+# Loop through the years and process the tables
+for (year in 2016:2023) {
+  tables_list_D[[as.character(year)]] <- process_table_D(year)
+}
+
+# Combine all tables into one
+fpD_snap_table <- bind_rows(tables_list_D, .id = "Year")
+
+#OFFENSE
+# Function to scrape and process the table for a given year
+process_table_O <- function(year) {
+  url_O <- paste0("https://www.fantasypros.com/nfl/reports/snap-counts/?year=", year)
+  table_O <- read_html(url_O) %>%
+    html_node("table") %>%
+    html_table()
+  
+  # Replace "bye" with "0" and convert columns to integers
+  table_O <- table_O %>%
+    mutate(across(everything(), ~ ifelse(. == "bye", "0", .))) %>%
+    mutate(across(-c(1:3), as.integer))
+  
+  return(table_O)
+}
+
+# List to store tables
+tables_list_O <- list()
+
+# Loop through the years and process the tables
+for (year in 2016:2023) {
+  tables_list_O[[as.character(year)]] <- process_table_O(year)
+}
+
+# Combine all tables into one
+fpO_snap_table <- bind_rows(tables_list_O, .id = "Year")
+
+
+# Combine O and D
+fp_snap_table <- bind_rows(fpD_snap_table, fpO_snap_table)
+```
+
+pivot that ho
+```{r}
+library(tidyr)
+library(dplyr)
+
+# Ensure all columns are character type before pivoting
+fpD_snap_table <- fpD_snap_table %>%
+  mutate(across(everything(), as.character))
+
+fpO_snap_table <- fpO_snap_table %>%
+  mutate(across(everything(), as.character))
+
+# Identify and resolve duplicates in the defense table
+fpD_snap_table <- fpD_snap_table %>%
+  group_by(Player, Pos, Year) %>%
+  summarise(across(everything(), ~ paste(unique(.), collapse = ",")), .groups = 'drop')
+
+# Identify and resolve duplicates in the offense table
+fpO_snap_table <- fpO_snap_table %>%
+  group_by(Player, Pos, Year) %>%
+  summarise(across(everything(), ~ paste(unique(.), collapse = ",")), .groups = 'drop')
+
+# Pivot the defense table to a wider format
+fpD_snap_table_wide <- fpD_snap_table %>%
+  pivot_wider(names_from = Year, values_from = -c(Year, Player, Pos), names_prefix = "Year_")
+
+# Pivot the offense table to a wider format
+fpO_snap_table_wide <- fpO_snap_table %>%
+  pivot_wider(names_from = Year, values_from = -c(Year, Player, Pos), names_prefix = "Year_")
+
+# Combine the wide tables for defense and offense
+fp_snap_table_wide <- bind_rows(fpD_snap_table_wide, fpO_snap_table_wide)
+
+```
+
+Adjustments
+```{r}
+# Convert the TTL_Year_ columns to numeric
+fp_snap_table_wide <- fp_snap_table_wide %>%
+  mutate(across(starts_with("TTL_Year_"),  ~ 
+                  as.numeric(replace(., !is.na(.) & !grepl("^[0-9]+$", .), 0))))
+
+# Create a new column that sums the values in TTL_Year_2016 and the following years
+fp_snap_table_wide <- fp_snap_table_wide %>%
+  mutate(Total_Career_Snaps = rowSums(select(., starts_with("TTL_Year_")), na.rm = TRUE))
+
+# Rearrange the columns to place the new column as the third column
+fp_snap_table_wide <- fp_snap_table_wide %>%
+  select(1:2, Total_Career_Snaps, everything())
+
+
+```
+
+
+load in combine data. Gonna have to write different code per computer
+```{r}
+#Alaina
+combine22 <- read.csv("/Users/alainabrady/Desktop/Predictive Analytics/2022_combine.csv")
+combine21 <- read.csv("/Users/alainabrady/Desktop/Predictive Analytics/2021_combine.csv")
+combine20 <- read.csv("/Users/alainabrady/Desktop/Predictive Analytics/2020_combine.csv")
+combine19 <- read.csv("/Users/alainabrady/Desktop/Predictive Analytics//2019_combine.csv")
+combine18 <- read.csv("/Users/alainabrady/Desktop/Predictive Analytics/2018_combine.csv")
+combine17 <- read.csv("/Users/alainabrady/Desktop/Predictive Analytics/2017_combine.csv")
+combine16 <- read.csv("/Users/alainabrady/Desktop/Predictive Analytics/2016_combine.csv")
+
+# #Collin
+ # combine22 <- read.csv("C:/Users/cstra/Downloads/NFL_Combine_Data/2022_combine.csv")
+ # combine21 <- read.csv("C:/Users/cstra/Downloads/NFL_Combine_Data/2021_combine.csv")
+ # combine20 <- read.csv("C:/Users/cstra/Downloads/NFL_Combine_Data/2020_combine.csv")
+ # combine19 <- read.csv("C:/Users/cstra/Downloads/NFL_Combine_Data/2019_combine.csv")
+ # combine18 <- read.csv("C:/Users/cstra/Downloads/NFL_Combine_Data/2018_combine.csv")
+ # combine17 <- read.csv("C:/Users/cstra/Downloads/NFL_Combine_Data/2017_combine.csv")
+ # combine16 <- read.csv("C:/Users/cstra/Downloads/NFL_Combine_Data/2016_combine.csv") 
+  
+#Max
+#combine22 <- read.csv()#filepath
+#combine21 <- read.csv()#filepath
+#combine20 <- read.csv()#filepath
+#combine19 <- read.csv()#filepath
+#combine18 <- read.csv()#filepath
+#combine17 <- read.csv()#filepath
+#combine16 <- read.csv()#filepath
+  
+#Stef
+#combine22 <- read.csv("C:/Users/stefa/OneDrive/Documents/Predictive Analytics/2022_combine.csv")#file path
+#combine21 <- read.csv("C:/Users/stefa/OneDrive/Documents/Predictive Analytics/2021_combine.csv")#filepath
+#combine20 <- read.csv("C:/Users/stefa/OneDrive/Documents/Predictive Analytics/2020_combine.csv")#filepath
+#combine19 <- read.csv("C:/Users/stefa/OneDrive/Documents/Predictive Analytics/2019_combine.csv")#filepath
+#combine18 <- read.csv("C:/Users/stefa/OneDrive/Documents/Predictive Analytics/2018_combine.csv")#filepath
+#combine17 <- read.csv("C:/Users/stefa/OneDrive/Documents/Predictive Analytics/2017_combine.csv")#filepath
+#combine16 <- read.csv("C:/Users/stefa/OneDrive/Documents/Predictive Analytics/2016_combine.csv")#filepath
+
+all_combine_data <- bind_rows(combine22, combine21, combine20, combine19, combine18, combine17, combine16)
+
+all_combine_data$Player <- gsub("\\.", "", all_combine_data$Player)
+
+fp_snap_table_wide$Player <- gsub("\\.", "", fp_snap_table_wide$Player)
+
+all_combine_data$Player <- toupper(all_combine_data$Player) 
+
+fp_snap_table_wide$Player <- toupper(fp_snap_table_wide$Player)
+
+all_combine_data$Player <- gsub("III", "", all_combine_data$Player)
+
+fp_snap_table_wide$Player <- gsub("III", "", fp_snap_table_wide$Player)
+
+
+all_combine_data$Player <- gsub("IV", "", all_combine_data$Player)
+
+fp_snap_table_wide$Player <- gsub("IV", "", fp_snap_table_wide$Player)
+
+
+all_combine_data$Player <- gsub("II", "", all_combine_data$Player)
+
+fp_snap_table_wide$Player <- gsub("II", "", fp_snap_table_wide$Player)
+
+all_combine_data$Player <- gsub("SR", "", all_combine_data$Player)
+
+fp_snap_table_wide$Player <- gsub("SR", "", fp_snap_table_wide$Player)
+
+all_combine_data$Player <- gsub("JR", "", all_combine_data$Player)
+
+fp_snap_table_wide$Player <- gsub("JR", "", fp_snap_table_wide$Player)
+
+all_combine_data$Player <- trimws(all_combine_data$Player)
+
+fp_snap_table_wide$Player <- trimws(fp_snap_table_wide$Player)
+
+```
+
+Inner join combine and snap in to one via player
+```{r}
+dataset <- all_combine_data %>%
+  left_join(fp_snap_table_wide, by = "Player")
+
+#problem on lines 1232/1233 - sure happens elsewhere - duplicate players
+#will create new columns in each data set that are "Player & University"
+#innerjoin on P&U rather than Player
+
+dataset_unique <- dataset %>%
+  filter(!Player %in% Player[duplicated(Player)])
+
+
+dataset_unique$Total_Career_Snaps[is.na(dataset_unique$Total_Career_Snaps)] <- 0
+
+```
+
+```{r}
+summary(dataset)
+
+## removing offensive linemen/special teams/positions that dont match between columns
+dataset_unique <- dataset_unique[!dataset_unique$Pos.x %in% c("LT", "LG", "C", "RG", "RT","OT", "OG", "K", "LS", "P"), ]
+
+RB_data <- dataset_unique %>%
+  filter(Pos.x == "RB")
+```
+
+XGboost
+```{r}
+library("xgboost")
+library("caret")
+library("ggplot2")
+library("xgboostExplainer")
+library("pROC")
+```
+
+```{r}
+convert_to_inches <- function(height) {
+  height_split <- strsplit(height, "-")[[1]]
+  feet <- as.numeric(height_split[1])  
+  inches <- as.numeric(height_split[2]) 
+  
+  total_inches <- (feet * 12) + inches
+  return(total_inches)
+}
+
+RB_data$heights_in_inches <- sapply(RB_data$Ht, convert_to_inches)
+
+
+
+set.seed(12345)
+train_index <- sample(1:nrow(RB_data), 0.8 * nrow(RB_data))
+train_data <- RB_data[train_index, ]
+test_data <- RB_data[-train_index, ]
+
+
+dtrain <- xgb.DMatrix(data = as.matrix(train_data[, c(5:11, 13, 182)]), label = as.numeric(train_data$Total_Career_Snaps) )
+dtest <- xgb.DMatrix(data = as.matrix(test_data[, c(5:11, 13, 182)]), label = as.numeric(test_data$Total_Career_Snaps))
+
+```
+
+```{r}
+set.seed(12345)
+bst_1 <- xgboost(data = dtrain,
+                 nrounds = 100,
+                 verbose = 1,
+                 print_every_n = 20,
+                 objective = "reg:squarederror", 
+                 eval_metric = "rmse")
+
+
+boost_preds_1 <- predict(bst_1, dtest)
+
+pred_dat <- cbind.data.frame(boost_preds_1, test_data$Total_Career_Snaps)
+
+boost_pred_class <- rep(0, length(boost_preds_1))
+boost_pred_class[boost_preds_1 >= 0.5] <- 1
+
+
+# Calculate evaluation metrics for regression
+# Mean Squared Error (MSE)
+mse <- mean((boost_preds_1 - test_data$Total_Career_Snaps)^2)
+cat("Mean Squared Error (MSE):", mse, "\n")
+
+# Root Mean Squared Error (RMSE)
+rmse <- sqrt(mse)
+cat("Root Mean Squared Error (RMSE):", rmse, "\n")
+
+# Mean Absolute Error (MAE)
+mae <- mean(abs(boost_preds_1 - test_data$Total_Career_Snaps))
+cat("Mean Absolute Error (MAE):", mae, "\n")
+```
+
+```{r}
+set.seed(12345)
+
+bst <- xgb.cv(data = dtrain,
+              nfold = 5,
+              eta = 0.1,
+              nrounds = 1000,
+              early_stopping_rounds = 50,
+              verbose = 1,
+              nthread = 1,
+              print_every_n = 20,
+              objective = "reg:squarederror",
+              eval_metric = "rmse")
+
+```
+
+Best iteration is 282, set to 300 with early stopping 20
+
+```{r}
+max_depth_vals <- c(3, 5, 7, 10, 15)
+min_child_weight <- c(1, 3, 5, 7, 10, 15)
+
+cv_params <- expand.grid(max_depth_vals, min_child_weight)
+names(cv_params) <- c("max_depth", "min_child_weight")
+
+rmse_vec <- mae_vec <- rep(NA, nrow(cv_params))
+
+for (i in 1:nrow(cv_params)) {
+  set.seed(12345)
+  bst_tune <- xgb.cv(data = dtrain,
+                     nfold = 5,
+                     eta = 0.1,
+                     max.depth = cv_params$max_depth[i],
+                     min_child_weight = cv_params$min_child_weight[i],
+                     nrounds = 300,
+                     early_stopping_rounds = 20,
+                     verbose = 1,
+                     nthread = 1,
+                     print_every_n = 20,
+                     objective = "reg:squarederror",
+                     eval_metric = "rmse")
+  rmse_vec[i] <- bst_tune$evaluation_log$test_rmse_mean[bst_tune$best_iteration]
+
+bst_tune_mae <- xgb.cv(data = dtrain,
+                         nfold = 5,
+                         eta = 0.1,
+                         max_depth = cv_params$max_depth[i],
+                         min_child_weight = cv_params$min_child_weight[i],
+                         nrounds = 200,
+                         early_stopping_rounds = 20,
+                         verbose = 1,
+                         nthread = 1,
+                         print_every_n = 20,
+                         objective = "reg:squarederror",
+                         eval_metric = "mae")           
+
+  mae_vec[i] <- bst_tune_mae$evaluation_log$test_mae_mean[bst_tune_mae$best_iteration]
+}
+```
+
+```{r}
+res_db <- cbind.data.frame(cv_params, rmse_vec, mae_vec)
+names(res_db)[3:4] <- c("rmse", "mae")
+res_db$max_depth <- as.factor(res_db$max_depth)
+res_db$min_child_weight <- as.factor(res_db$min_child_weight)
+
+g1 <- ggplot(res_db, aes(y = max_depth, x = min_child_weight, fill = rmse)) +
+  geom_tile() +
+  theme_bw() +
+  scale_fill_gradient2(low = "blue",
+                       mid = "white",
+                       high = "red",
+                       midpoint = mean(res_db$rmse),
+                       space = "Lab",
+                       na.value = "grey",
+                       guide = "colourbar",
+                       aesthetics = "fill") +
+  labs(x = "Minimum Child Weight", y = "Max Depth", fill = "RMSE")
+g1 
+```
+
+Min child weight 3, max depth 3
+```{r}
+res_db
+```
+
+tune gamma
+```{r}
+gamma_vals <- c(0, 0.05, 0.1, 0.15, 0.2)
+
+set.seed(12345)
+
+rmse_vec <- mae_vec <- rep(NA, length(gamma_vals))
+
+for (i in 1:length(gamma_vals)) {
+  set.seed(12345)
+  
+  bst_tune <- xgb.cv(data = dtrain,
+                     nfold = 5,
+                     eta = 0.1,
+                     max.depth = 3,
+                     min_child_weight = 3,
+                     gamma = gamma_vals[i],
+                     nrounds = 300,
+                     early_stopping_rounds = 20,
+                     verbose = 1,
+                     nthread = 1,
+                     print_every_n = 20,
+                     objective = "reg:squarederror",
+                     eval_metric = "rmse")
+  
+  rmse_vec[i] <- bst_tune$evaluation_log$test_rmse_mean[bst_tune$best_iteration]
+  
+  bst_tune_mae <- xgb.cv(data = dtrain,
+                         nfold = 5,
+                         eta = 0.1,
+                         max.depth = 3,
+                         min_child_weight = 3 ,
+                         gamma = gamma_vals[i],
+                         nrounds = 300,
+                         early_stopping_rounds = 20,
+                         verbose = 1,
+                         nthread = 1,
+                         print_every_n = 20,
+                         objective = "reg:squarederror",
+                         eval_metric = "mae")
+  
+  mae_vec[i] <- bst_tune_mae$evaluation_log$test_mae_mean[bst_tune_mae$best_iteration]
+}
+
+```
+
+```{r}
+cbind.data.frame(gamma_vals, rmse_vec, mae_vec)
+```
+
+Gamma of 0
+
+```{r}
+  bst <- xgb.cv(data = dtrain,
+                     nfold = 5,
+                     eta = 0.1,
+                     max.depth = 3,
+                     min_child_weight = 3,
+                     gamma = 0,
+                     nrounds = 300,
+                     early_stopping_rounds = 20,
+                     verbose = 1,
+                     nthread = 1,
+                     print_every_n = 20,
+                     objective = "reg:squarederror",
+                     eval_metric = "rmse")
+  
+
+  bst_mae <- xgb.cv(data = dtrain,
+                         nfold = 5,
+                         eta = 0.1,
+                         max.depth = 3,
+                         min_child_weight = 3,
+                         gamma = 0,
+                         nrounds = 300,
+                         early_stopping_rounds = 20,
+                         verbose = 1,
+                         nthread = 1,
+                         print_every_n = 20,
+                         objective = "reg:squarederror",
+                         eval_metric = "mae")
+  
+```
+
+best iteration rmse 100
+mae = 10
+
+```{r}
+subsample <- c(0.6, 0.7, 0.8, 0.9, 1)
+colsample_by_tree <- c(0.6, 0.7, 0.8, 0.9, 1)
+
+# Create the parameter grid
+cv_params <- expand.grid(subsample, colsample_by_tree)
+names(cv_params) <- c("subsample", "colsample_by_tree")
+
+# Initialize the result vectors
+rmse_vec <- mae_vec <- rep(NA, nrow(cv_params))
+
+for (i in 1:nrow(cv_params)) {
+  set.seed(12345)
+  
+  # RMSE evaluation
+  bst_tune <- xgb.cv(data = dtrain,
+                     nfold = 5,
+                     eta = 0.1,
+                     max.depth = 3,
+                     min_child_weight = 3,
+                     gamma = 0,
+                     subsample = cv_params$subsample[i],
+                     colsample_by_tree = cv_params$colsample_by_tree[i],
+                     nrounds = 100,
+                     early_stopping_rounds = 20,
+                     verbose = 1,
+                     nthread = 1,
+                     print_every_n = 20,
+                     objective = "reg:squarederror",
+                     eval_metric = "rmse")
+  
+  rmse_vec[i] <- bst_tune$evaluation_log$test_rmse_mean[bst_tune$best_iteration]
+  
+  # MAE evaluation
+  bst_tune_mae <- xgb.cv(data = dtrain,
+                         nfold = 5,
+                         eta = 0.1,
+                         max.depth = 3,
+                         min_child_weight = 3,
+                         gamma = 0,
+                         subsample = cv_params$subsample[i],
+                         colsample_by_tree = cv_params$colsample_by_tree[i],
+                         nrounds = 100,
+                         early_stopping_rounds = 20,
+                         verbose = 1,
+                         nthread = 1,
+                         print_every_n = 20,
+                         objective = "reg:squarederror",
+                         eval_metric = "mae")
+  
+  mae_vec[i] <- bst_tune_mae$evaluation_log$test_mae_mean[bst_tune_mae$best_iteration]
+}
+```
+
+```{r}
+res_db <- cbind.data.frame(cv_params, rmse_vec, mae_vec)
+names(res_db)[3:4] <- c("rmse", "mae")
+
+res_db$subsample <- as.factor(res_db$subsample)
+res_db$colsample_by_tree <- as.factor(res_db$colsample_by_tree)
+
+g3 <- ggplot(res_db, aes(y = colsample_by_tree, x = subsample, fill = rmse)) +
+  geom_tile() +
+  theme_bw() +
+  scale_fill_gradient2(low = "blue",
+                       mid = "white",
+                       high = "red",
+                       midpoint = mean(res_db$rmse),
+                       space = "Lab",
+                       na.value = "grey",
+                       guide = "colourbar",
+                       aesthetics = "fill") +
+  labs(x = "Subsample", y = "Column Sample by Tree", fill = "RMSE")
+g3
+```
+
+```{r}
+res_db
+```
+
+subsample = 0.8, colsample = 0.6
+
+```{r}
+ bst_mod_1 <- xgb.cv(data = dtrain,
+                     nfold = 5,
+                     eta = 0.3,
+                     max.depth = 3,
+                     min_child_weight = 3,
+                     gamma = 0,
+                     subsample = 0.8,
+                     colsample_by_tree = 0.6,
+                     nrounds = 100,
+                     early_stopping_rounds = 20,
+                     verbose = 1,
+                     nthread = 1,
+                     print_every_n = 20,
+                     objective = "reg:squarederror",
+                     eval_metric = "rmse")
+
+  bst_mae_1 <- xgb.cv(data = dtrain,
+                         nfold = 5,
+                         eta = 0.3,
+                         max.depth = 3,
+                         min_child_weight = 3,
+                         gamma = 0,
+                         subsample = 0.8,
+                         colsample_by_tree = 0.6,
+                         nrounds = 100,
+                         early_stopping_rounds = 20,
+                         verbose = 1,
+                         nthread = 1,
+                         print_every_n = 20,
+                         objective = "reg:squarederror",
+                         eval_metric = "mae")
+```
+
+```{r}
+bst_mod_2 <- xgb.cv(data = dtrain,
+                     nfold = 5,
+                     eta = 0.1,
+                     max.depth = 3,
+                     min_child_weight = 3,
+                     gamma = 0,
+                     subsample = 0.8,
+                     colsample_by_tree = 0.6,
+                     nrounds = 100,
+                     early_stopping_rounds = 20,
+                     verbose = 1,
+                     nthread = 1,
+                     print_every_n = 20,
+                     objective = "reg:squarederror",
+                     eval_metric = "rmse")
+
+  bst_mae_2 <- xgb.cv(data = dtrain,
+                         nfold = 5,
+                         eta = 0.1,
+                         max.depth = 3,
+                         min_child_weight = 3,
+                         gamma = 0,
+                         subsample = 0.8,
+                         colsample_by_tree = 0.6,
+                         nrounds = 100,
+                         early_stopping_rounds = 20,
+                         verbose = 1,
+                         nthread = 1,
+                         print_every_n = 20,
+                         objective = "reg:squarederror",
+                         eval_metric = "mae")
+```
+
+```{r}
+bst_mod_3 <- xgb.cv(data = dtrain,
+                     nfold = 5,
+                     eta = 0.05,
+                     max.depth = 3,
+                     min_child_weight = 3,
+                     gamma = 0,
+                     subsample = 0.8,
+                     colsample_by_tree = 0.6,
+                     nrounds = 100,
+                     early_stopping_rounds = 20,
+                     verbose = 1,
+                     nthread = 1,
+                     print_every_n = 20,
+                     objective = "reg:squarederror",
+                     eval_metric = "rmse")
+
+  bst_mae_3 <- xgb.cv(data = dtrain,
+                         nfold = 5,
+                         eta = 0.05,
+                         max.depth = 3,
+                         min_child_weight = 3,
+                         gamma = 0,
+                         subsample = 0.8,
+                         colsample_by_tree = 0.6,
+                         nrounds = 100,
+                         early_stopping_rounds = 20,
+                         verbose = 1,
+                         nthread = 1,
+                         print_every_n = 20,
+                         objective = "reg:squarederror",
+                         eval_metric = "mae")
+```
+
+```{r}
+bst_mod_4 <- xgb.cv(data = dtrain,
+                     nfold = 5,
+                     eta = 0.01,
+                     max.depth = 3,
+                     min_child_weight = 3,
+                     gamma = 0,
+                     subsample = 0.8,
+                     colsample_by_tree = 0.6,
+                     nrounds = 100,
+                     early_stopping_rounds = 20,
+                     verbose = 1,
+                     nthread = 1,
+                     print_every_n = 20,
+                     objective = "reg:squarederror",
+                     eval_metric = "rmse")
+
+  bst_mae_4 <- xgb.cv(data = dtrain,
+                         nfold = 5,
+                         eta = 0.01,
+                         max.depth = 3,
+                         min_child_weight = 3,
+                         gamma = 0,
+                         subsample = 0.8,
+                         colsample_by_tree = 0.6,
+                         nrounds = 100,
+                         early_stopping_rounds = 20,
+                         verbose = 1,
+                         nthread = 1,
+                         print_every_n = 20,
+                         objective = "reg:squarederror",
+                         eval_metric = "mae")
+```
+
+```{r}
+bst_mod_5 <- xgb.cv(data = dtrain,
+                     nfold = 5,
+                     eta = 0.005,
+                     max.depth = 3,
+                     min_child_weight = 3,
+                     gamma = 0,
+                     subsample = 0.8,
+                     colsample_by_tree = 0.6,
+                     nrounds = 100,
+                     early_stopping_rounds = 20,
+                     verbose = 1,
+                     nthread = 1,
+                     print_every_n = 20,
+                     objective = "reg:squarederror",
+                     eval_metric = "rmse")
+
+  bst_mae_5 <- xgb.cv(data = dtrain,
+                         nfold = 5,
+                         eta = 0.005,
+                         max.depth = 3,
+                         min_child_weight = 3,
+                         gamma = 0,
+                         subsample = 0.8,
+                         colsample_by_tree = 0.6,
+                         nrounds = 100,
+                         early_stopping_rounds = 20,
+                         verbose = 1,
+                         nthread = 1,
+                         print_every_n = 20,
+                         objective = "reg:squarederror",
+                         eval_metric = "mae")
+```
+
+```{r}
+pd1 <- cbind.data.frame(bst_mod_1$evaluation_log[, c("iter", "test_rmse_mean")], rep(0.3, nrow(bst_mod_1$evaluation_log)))
+names(pd1)[3] <- "eta"
+
+pd2 <- cbind.data.frame(bst_mod_2$evaluation_log[, c("iter", "test_rmse_mean")], rep(0.1, nrow(bst_mod_2$evaluation_log)))
+names(pd2)[3] <- "eta"
+
+pd3 <- cbind.data.frame(bst_mod_3$evaluation_log[, c("iter", "test_rmse_mean")], rep(0.05, nrow(bst_mod_3$evaluation_log)))
+names(pd3)[3] <- "eta"
+
+pd4 <- cbind.data.frame(bst_mod_4$evaluation_log[, c("iter", "test_rmse_mean")], rep(0.01, nrow(bst_mod_4$evaluation_log)))
+names(pd4)[3] <- "eta"
+
+pd5 <- cbind.data.frame(bst_mod_5$evaluation_log[, c("iter", "test_rmse_mean")], rep(0.005, nrow(bst_mod_5$evaluation_log)))
+names(pd5)[3] <- "eta"
+
+plot_data <- rbind.data.frame(pd1, pd2, pd3, pd4, pd5)
+
+plot_data$eta <- as.factor(plot_data$eta)
+
+g4 <- ggplot(plot_data, aes(x = iter, y = test_rmse_mean, color = eta)) +
+  geom_smooth(alpha = 0.5) +
+  theme_bw() +
+  theme(panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(),
+        panel.border = element_blank(),
+        panel.background = element_blank()) +
+  labs(x = "Number of Trees", title = "Error Rate v Number of Trees",
+       y = "RMSE", color = "Learning \n Rate")
+
+g4
+```
+0.05
+```{r}
+set.seed(12345)
+
+bst_final <- xgboost(data = dtrain,
+                     nfold = 5,
+                     eta = 0.05,
+                     max.depth = 3,
+                     min_child_weight = 3,
+                     gamma = 0,
+                     subsample = 0.8,
+                     colsample_by_tree = 0.6,
+                     nrounds = 100,
+                     early_stopping_rounds = 20,
+                     verbose = 1,
+                     nthread = 1,
+                     print_every_n = 20,
+                     objective = "reg:squarederror",
+                     eval_metric = "rmse")
+
+  bst_mae_final <- xgboost(data = dtrain,
+                         nfold = 5,
+                         eta = 0.05,
+                         max.depth = 3,
+                         min_child_weight = 3,
+                         gamma = 0,
+                         subsample = 0.8,
+                         colsample_by_tree = 0.6,
+                         nrounds = 100,
+                         early_stopping_rounds = 20,
+                         verbose = 1,
+                         nthread = 1,
+                         print_every_n = 20,
+                         objective = "reg:squarederror",
+                         eval_metric = "mae")
+```
+
+```{r}
+boost_preds_final <- predict(bst_final, dtest)
+
+pred_dat <- cbind.data.frame(boost_preds_final, test_data$Total_Career_Snaps)
+
+boost_pred_class <- rep(0, length(boost_preds_final))
+boost_pred_class[boost_preds_final >= 0.5] <- 1
+
+
+# Calculate evaluation metrics for regression
+# Mean Squared Error (MSE)
+mse <- mean((boost_preds_final - test_data$Total_Career_Snaps)^2)
+cat("Mean Squared Error (MSE):", mse, "\n")
+
+# Root Mean Squared Error (RMSE)
+rmse <- sqrt(mse)
+cat("Root Mean Squared Error (RMSE):", rmse, "\n")
+
+# Mean Absolute Error (MAE)
+mae <- mean(abs(boost_preds_final - test_data$Total_Career_Snaps))
+cat("Mean Absolute Error (MAE):", mae, "\n")
+```
+
+
+Feature Importance
+```{r}
+library("SHAPforxgboost")
+library("ggplot2")
+```
+
+```{r}
+X_train <- train_data[, c(5:11, 182)] 
+X_train_matrix <- as.matrix(X_train)
+y_train <- train_data[, 13]
+dtrain <- xgb.DMatrix(data = X_train_matrix, label = y_train)
+
+
+bst_final <- xgboost(data = dtrain,
+                     nfold = 5,
+                     # eta = 0.05,
+                     max_depth = 10,
+                     min_child_weight = 3,
+                     gamma = 0,
+                     subsample = 1,
+                     colsample_bytree = 0.6,
+                     nrounds = 90,
+                     early_stopping_rounds = 20,
+                     verbose = 1,
+                     nthread = 1,
+                     print_every_n = 20,
+                     objective = "reg:squarederror",
+                     eval_metric = "rmse")
+
+
+
+shap_values <- shap.values(xgb_model = bst_final, X_train = X_train_matrix)
+
+
+shap_long <- shap.prep(shap_contrib = shap_values$shap_score, X_train = X_train_matrix)
+
+# Plot SHAP summary
+shap.plot.summary(shap_long)
+
+```
+
+```{r}
+importance_matrix <- xgb.importance(model = bst_final)
+xgb.plot.importance(importance_matrix)
+```
